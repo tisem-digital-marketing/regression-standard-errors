@@ -1,0 +1,415 @@
+---
+title: "Linear Regression - Getting Standard Errors Right"
+subtitle: "Social Media and Web Analytics @ TiSEM"
+author: "Lachlan Deer"
+date: "Preliminary Draft, Last updated: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(estimatr)
+library(fixest)
+library(dplyr)
+```
+
+## Motivation
+
+* Recall the 6 assumptions we need for the OLS estimator to be unbiased and have the minimum variance:
+
+    1. Our **sample** (the $x_k$'s and $y_i$) was **randomly drawn** from the population.
+    
+    2. $y$ is a **linear function** of the $\beta_k$'s and $u_i$.
+    
+    3. There is **no perfect multicollinearity** in our sample.
+    
+    4. The explanatory variables are **exogenous**: $\mathop{\boldsymbol{E}}\left[ u \middle| X \right] = 0 \left(\implies \mathop{\boldsymbol{E}}\left[ u \right] = 0\right)$.
+    
+    5. The disurbances have **constant variance** $\sigma^2$ and **zero covariance**, _i.e._,
+      - $\mathop{\boldsymbol{E}}\left[ u_i^2 \middle| X_i \right] = \mathop{\text{Var}} \left( u_i \middle| X_i \right) = \sigma^2 \implies \mathop{\text{Var}} \left( u_i \right) = \sigma^2$
+      - $\mathop{\text{Cov}} \left( u_i, \, u_j \middle| X_i,\,X_j \right) = \mathop{\boldsymbol{E}}\left[ u_i u_j \middle| X_i,\,X_j \right] = 0$ for $i\neq j$
+    
+    6. The disturbances come from a **Normal** distribution, _i.e._, $u_i \overset{\text{iid}}{\sim} \mathop{\text{N}}\left( 0, \sigma^2 \right)$.
+
+* While (4) - exogeneity - is by far the most important for getting an unbiased estimate, violations of (5) will lead to misguided our statistical inference
+    * Why? (5) effects the standard errors, which are the basis of hypothesis testing and confidence intervals
+    * If (5) is violated, then we might be making the wrong conclusions
+
+* This note looks at two violations of (5):
+    1. Heteroskedasticity: The variance of the error term is different for different observations
+    $$
+    \mathop{\boldsymbol{E}}\left[ u_i^2 \right] = \sigma_i^2
+    $$
+    2. Clustered Standard Errors: The variance of the error term is correlated across observations
+    $$ 
+    \mathop{\boldsymbol{E}}\left[ u_i u_j \right] \neq 0 \quad \text{ for some } i\neq j
+    $$
+
+* Dealing with violations of (5) is an part of every day life in marketing analytics
+    * We need to know what to do when we see it
+
+## Heteroskedasticity
+
+* Problem we face: **heteroskedasticity**
+    $$
+    \mathop{\boldsymbol{E}}\left[ u_i^2 \right] = \sigma_i^2
+    $$
+    * This means that the variance of the error term is different for different observations
+
+* **Heteroskedasticity** is present when the variance of $u$ changes with any combination of our explanatory variables
+
+* Questions we want to answer:
+    * How can we detect heteroskedasticity?
+    * What do we do if we detect it?
+
+### Detecting Heteroskedasticity
+
+* Two approaches:
+    1. Formal statistical tests
+    2. "Eye-conometrics"
+
+* We'll focus on "Eye-conometrics" - i.e. looking for it from visualizing data
+    * It means we need to do less statistical analysis^[
+    Which for the purpose of this class is useful, though it is not a definitive guarantee we spot heteroskedasticity correctly.
+    ]
+
+* We can visually detect if the residual, 
+$$ 
+e_i = y_i - \hat{\beta_0} - \hat{\beta_1} x_{i1} - \hat{\beta_2} x_{i2} - ... 
+$$
+seems to look non-constant when plotted against either:
+    (a) One or any of the $x$ variables 
+    (b) Against the fitted values of the regression
+        * Why? fitted values are just a specific combination of the $x$'s.
+
+* Here's what the errors should look like when there is **no heteroskedasticity**
+
+```{r, echo = F, fig.height = 3}
+set.seed(12345)
+ggplot(data = tibble(
+  x = runif(1e3, -3, 3),
+  e = rnorm(1e3, 0, sd = 1)
+), aes(x = x, y = e)) +
+geom_point(color = "darkslategrey", size = 2.75, alpha = 0.5) +
+labs(x = "x", y = "u") +
+theme_bw()
+```
+
+* Here's three examples of what the errors look like when there **is heteroskedasticity**:
+    (a) Variance of $e$ increases with x
+
+```{r, echo = F, fig.height = 3, message = FALSE, warning = FALSE}
+set.seed(12345)
+ggplot(data = tibble(
+  x = runif(1e3, -3, 3),
+  e = rnorm(1e3, 0, sd = 4 + 1.5 * x)
+), aes(x = x, y = e)) +
+geom_point(color = "darkslategrey", size = 2.75, alpha = 0.5) +
+labs(x = "x", y = "e") +
+theme_bw()
+```
+    (b) Variance of $e$ increases at the extremes of  x
+
+```{r, echo = F, fig.height = 3, message = FALSE, warning = FALSE}
+set.seed(12345)
+ggplot(data = tibble(
+  x = runif(1e3, -3, 3),
+  e = rnorm(1e3, 0, sd = 2 + x^2)
+), aes(x = x, y = e)) +
+geom_point(color = "darkslategrey", size = 2.75, alpha = 0.5) +
+labs(x = "x", y = "e") +
+theme_bw()
+```
+    (c) Variance of $e$ differs by group
+
+```{r, echo = F, fig.height = 3, message = FALSE, warning = FALSE}
+set.seed(12345)
+ggplot(data = tibble(
+  g = sample(c(F,T), 1e3, replace = T),
+  x = runif(1e3, -3, 3),
+  e = rnorm(1e3, 0, sd = 0.5 + 2 * g)
+), aes(x = x, y = e, color = g, shape = g, alpha = g)) +
+geom_point(size = 2.75) +
+scale_color_manual(values = c("darkslategrey", "red")) +
+scale_shape_manual(values = c(16, 1)) +
+scale_alpha_manual(values = c(0.5, 0.8)) +
+theme_bw() + 
+theme(legend.position = "none")
+```
+
+### Living With Heteroskedasticity
+
+* In the presence of heteroskedasticity:
+    * The regression **coefficients are still unbiased**
+    * The regression **standard errors are biased**
+        * Which means confidence intervals and hypothesis tests are going to give potentially wrong conclusions
+
+* What can we do about it?
+    * pragmatic answer: find unbiased estimates for the standard errors^[
+    There are other approaches, but this is the simplest and most widely used.
+    ]
+        * Unbiased standard errors $\rightarrow$ 'correct' confidence intervals and hypothesis tests
+
+* Pragmatic Answer: Heteroskedasticity robust standard errors
+    * Essentially a different way to estimate the standard errors
+    * So that they are "robust" (i.e. unbiased) when there is heteroskedasticity
+
+* How can we do this in `R`?
+
+### Heteroskedasticity Robust Standard Errors in R
+
+* We will use the `estimatr` package to compute heteroskedasticity robust standard errors:
+
+```{r}
+library(estimatr)
+library(broom) # to make our results look tidy
+```
+
+* Let's first download some data: from the NBA
+    * i.e. basketball data from the US
+
+```{r, cache = TRUE}
+url <- "https://bit.ly/3sO4hrD"
+
+out_file <- "data/nba_data.csv"
+download.file(url, 
+              destfile = out_file, 
+              mode = "wb")
+```
+
+* Read in the data and tidy it up a bit:
+
+```{r, message = FALSE, warning=FALSE}
+library(readr)
+# you may get "parsing failure" warnings ... ignore them
+nba <- read_csv(out_file)
+
+# clean up the data a little
+nba <- 
+    nba %>%
+    rename(
+        points = pts,
+        player_id = ilkid
+    ) %>%
+    # keep only those who played "enough" in a year
+    filter(minutes > 2) %>%
+    select(player_id, points, minutes)
+    
+```
+
+* Let's run the following regression:
+
+$$
+points_{i} = \beta_0 + \beta_1 minutes_i + u_i
+$$
+
+i.e, does average points per game for a player in a given season vary depending on the number of minutes? (Likely, yes)
+
+* The 'standard' way that assumes **no heteroskedasticity**
+
+```{r}
+ols1 <- lm(points ~ minutes, 
+            data = nba)
+tidy(ols1, conf.int = TRUE)
+```
+
+* OK, thats a very small standard error...
+
+* Is there presence of heteroskedasticity?
+    * I'll check how the residuals vary with the regression fitted values
+    * (you could also do this by looking at residuals vs points)
+
+```{r, fig.height=3}
+library(ggplot2) # for plotting
+# get residuals and fitted values
+nba <- 
+    nba %>%
+    mutate(
+        residuals = resid(ols1),
+        fitted_val = predict(ols1)
+    )
+
+nba %>%
+    ggplot(aes(x = fitted_val, 
+               y = residuals,
+               alpha = 0.35)
+           ) + 
+    geom_point() + 
+    theme_bw() +
+    theme(legend.position = "none")
+```
+
+* Figure above shows definite evidence of a "fan" shape.
+    * $\implies$ probably heteroskedasticity
+
+* Let's get heteroskedasticity robust standard errors. We use the `lm_robust()` function
+
+```{r}
+# library(estimatr) # already loaded
+
+ols1a <- lm_robust(points ~ minutes, 
+                   data = nba)
+tidy(ols1a, conf.int = TRUE)
+```
+
+* Let's compare the standard error on `minutes:`
+    * Assuming **no heteroskedasticity**: `r tidy(ols1)$std.error[2]`
+    * Assuming **heteroskedasticity**: `r tidy(ols1a)$std.error[2]`
+    * $\implies$ a `r round(100*(tidy(ols1a)$std.error[2] / tidy(ols1)$std.error[2] - 1), 2)` % increase in their magnitude!
+    
+## Clustered Standard Errors
+
+* Problem we face: **correlated errors** across observations 
+    $$ 
+    \mathop{\boldsymbol{E}}\left[ u_i u_j \right] \neq 0 \quad \text{ for some } i\neq j
+    $$
+    * i.e. the correlation of the error term between two observations is non-zero
+    * Also called **clustered errors**
+
+* Questions we want to answer:
+    - What is clustering?
+    - What to do if errors are correlated?
+    - (It's hard to detect per se)
+
+### What is Clustering?
+
+* Often, observations may share important observable and **un**observable characteristics that could influence an outcome variable
+    * A sample of individuals, groups of which live in the same province
+    * A sample of firms, groups of which are located in the same city
+    * and so on...
+
+* We might worry that observations in each of these groups are not independent, and that the regression error terms might be similar (or at least correlated) within the group.
+
+* If there is within group correlation, assumption (5) of the OLS estimator fails
+    * And it will impact our analysis
+
+## Living with Clustering
+
+* The presence of clustering and its' effects are conceptually similar to when we dealt with heteroskedasticity.
+
+* In the presence of clustered errors:
+    * The regression **coefficients may be biased**
+        * If we think the clustering effects do not "average out"
+        * i.e. clustering might cause violations to exogeneity
+        * Which means we have issues interpreting our regression coefficients
+    * The regression **standard errors are biased**
+        * Which means confidence intervals and hypothesis tests are going to give potentially wrong conclusions
+
+* What can we do about it?
+    * Pragmatic answer: 
+        * Find a way to "de-bias" the regression coefficients
+            * So that we can get unbiased regression coefficients
+        * Find unbiased estimates for the standard errors^[
+    There are other approaches, but this is the simplest and most widely used.
+    ]
+            * Unbiased standard errors $\rightarrow$ 'correct' confidence intervals and hypothesis tests
+
+* Pragmatic Answer - how to do it: 
+    * Add Cluster-specific fixed effects to the regression
+        * This will hopefully "solve" our endogeneity problem and remove any bias in our coefficients
+    * Cluster robust standard errors
+        * A different way to estimate the standard errors
+        * So that they are "robust" (i.e. unbiased) when there is clustering
+
+* How can we do this in `R`?
+    - There will be two approaches:
+        (1) Assume clustering does not cause endogeneity $\implies$ only deal with the need to adjust the standard errors
+        (2) Assume clustering might be causing endogeneity $\implies$ deal with fixed effects and the need to adjust the standard errors
+        
+### Cluster Robust Inference in `R`
+
+* Again, let's work with our NBA data, and the points versus minutes regression.
+    * The data are annual, and per player, so we might worry that residuals are correlated within each player
+
+#### Case 1: Only Adjust the Standard Errors
+
+* `estimatr` let's us handle clustering with the `lm_robust` function too
+    * But only if there's one source of clustering ... correlation within a player is probably the most important, so let's start there:
+    
+```{r}
+ols2 <- lm_robust(points ~ minutes,
+                   clusters = player_id,
+                   data = nba)
+tidy(ols2, conf.int = TRUE)
+```
+
+* We see that, by **clustering the standard errors**:
+    * The regression coefficient did not change
+    * The standard error on minutes increases to `r tidy(ols2)$std.error[2]`
+        * $\implies$ a `r round(100*(tidy(ols2)$std.error[2] / tidy(ols1)$std.error[2] - 1), 2)` % increase in their magnitude!
+        * That is **very substantial**
+
+#### Case 2: Cluster Specific Fixed Effects
+
+* If we think that the errors are correlated within a player and don't "average out" we have to worry about biased regression coefficients and biased standard errors^[
+    More technically, "averaging out" would be an assumption that the effect of the clustering is zero on average.
+    This is a relatively big assumption to make in most situations.
+]
+
+* Two problems, needs two solutions:
+    (1) Fixed Effects at the level of clustering
+        - Helps fix out not averaging out to zero problem
+        - And tries to "de-bias" the regression coefficients
+    (2) Adjusting the standard errors
+        - To fix the standard errors
+
+* Easiest way to achieve this is with the `fixest` package. It allows us to estimate linear regressions with fixed effects using the `feols()` package.
+
+* Run the regression, adding fixed effects for each player:
+
+```{r}
+ols2a <- feols(points ~ minutes 
+                |
+                # fixed effects for each player   
+                player_id, 
+                data = nba)
+```
+
+* Let's look at what comes out ...
+
+1. If add the fixed effects, but do not worry about making standard errors robust to clustering:
+
+```{r}
+tidy(ols2a, se = "standard", conf.int = TRUE)
+```
+
+* Regression coefficient of `minutes` decreases to `r round(tidy(ols2a)$estimate[1], 2)`
+    * And our previous estimate of the `minutes` coefficient, `r tidy(ols1)$estimate[2]` no longer falls in the new confidence interval
+
+2. If we add the effects **and** correct the standard errors for clustering:
+
+```{r}
+# by default, feols clusters std errors by the first fixed effect,
+# we only have one, so that is by player_id
+tidy(ols2a, se = "cluster", conf.int = TRUE)
+```
+
+* Adding cluster robust standard errors does not change our regression coefficient
+    * In the same way that heteroskedasticity robust ones did not either
+* The standard error on minutes is `r round(tidy(ols2a)$std.error[1], 4)`
+    * $\implies$ a `r round(100*(tidy(ols2a)$std.error[1] / tidy(ols1)$std.error[2] - 1), 2)` % increase in its' magnitude when compared to the naive OLS estimate (`ols1`)
+    * $\implies$ a `r round(100*(tidy(ols2a)$std.error[1] / tidy(ols2a, se = "standard")$std.error[1] - 1), 2)` % increase in its' magnitude when compared to the estimate with fixed effects (`ols2`)
+
+## Bottom Line
+
+* Worrying about assumption (5) - i.e. whether the standard errors have either **heteroskedasticity** or **clustering** is important
+    * With **heteroskedasticity** regression coefficients OK, **inference is wrong**
+    * With *clustered errors*, regression **coefficients** might **not be OK**, and **inference is wrong**
+
+* Remark: We did not worry about what if "heteroskedasticity and clustering" at the same time
+    * Why? cluster robust standard errors will clean up any issues with heteroskedasticity for "free"
+    * Then why not always do clustering?
+        * We have to take a stand on what variables might be causing the clustering
+        * Heteroskedasticity doesn't need us to do this
+        * Though, most modern empirical work will cluster the standard errors
+
+## License
+
+This work is licensed under a [Creative Commons Attribution-ShareAlike 4.0 International License](http://creativecommons.org/licenses/by-sa/4.0/).
+
+## Suggested Citation
+
+Deer, Lachlan, 2021. Social Media and Web Analytics: Linear Regression - Getting Standard Errors Right. Tilburg University. url = "https://github.com/tisem-digital-marketing/regression-standard-errors"
