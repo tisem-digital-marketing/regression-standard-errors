@@ -5,6 +5,7 @@ author: "Lachlan Deer"
 date: "Preliminary Draft, Last updated: `r format(Sys.time(), '%d %B, %Y')`"
 output:
   pdf_document
+urlcolor: blue
 ---
 
 ```{r setup, include=FALSE, message = FALSE}
@@ -406,6 +407,13 @@ tidy(ols2a, se = "cluster", conf.int = TRUE)
         * We have to take a stand on what variables might be causing the clustering
         * Heteroskedasticity doesn't need us to do this
         * Though, most modern empirical work will cluster the standard errors
+
+## Acknowledgements 
+
+These notes have used inspiration and some content (sometimes quite liberally) from the following sources:
+
+* Gregory S. Crawford's lecture notes from "Empirical Methods" taught in the Master's programs at the University of Zurich
+* Ed Rubin's lecture notes from "[Introduction to Econometrics](https://github.com/edrubin/EC421S20/)" taught in the Bachelor's program at the University Oregon
 
 ## License
 
