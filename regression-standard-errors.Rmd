@@ -170,6 +170,7 @@ library(broom) # to make our results look tidy
 
 * Let's first download some data: from the NBA
     * i.e. basketball data from the US
+    * Statistics about average player performance for each player in each year of their career (1946 - 2009)
 
 ```{r, cache = TRUE}
 url <- "https://bit.ly/3sO4hrD"
@@ -206,7 +207,7 @@ $$
 points_{i} = \beta_0 + \beta_1 minutes_i + u_i
 $$
 
-i.e, does average points per game for a player in a given season vary depending on the number of minutes? (Likely, yes)
+i.e, does average points per game for a player in a given season vary depending on the number of minutes? (Likely, yes - expect $\beta_1$ to be positive)
 
 * The 'standard' way that assumes **no heteroskedasticity**
 
